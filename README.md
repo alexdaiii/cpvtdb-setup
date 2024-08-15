@@ -26,7 +26,7 @@ Here are some of the variables that you will need in the secrets file:
   Instructions can be found [on Zenodo](https://developers.zenodo.org/#quickstart-upload).
 - deposition_id
   - The id of the Zenodo deposition which will be downloaded and used to populate the database.
-  - The deposition id for the CPVT database is `13256077`
+  - The deposition id for the CPVT database is [13256077](https://zenodo.org/records/13256077)
 - CF_TUNNEL_TOKEN
   - This will be passed as an environment variable to the cloudflare/cloudflared docker container.
   - To obtain this token, you need to create a tunnel on [Cloudflare](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/get-started/)
