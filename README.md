@@ -1,6 +1,6 @@
 # CPVT Database Setup
 
-Setups the CPVT database web app on a remote Debian/Ubuntu server.
+Setup the CPVT database web app on a remote Debian/Ubuntu server.
 
 ## Requirements
 
