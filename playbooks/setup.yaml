@@ -1,0 +1,107 @@
+- name: Ensure vars are set
+  hosts: privileged
+
+  tasks:
+    - name: ensure variables are defined
+      ansible.builtin.assert:
+        that:
+          - webuser is defined
+          - webuser_password is defined
+          - privileged_user is defined
+
+- name: Setup Podman for {{ webuser }}
+  hosts: privileged
+
+  tasks:
+    - name: Update and upgrade apt packages
+      become: true
+      ansible.builtin.apt:
+        upgrade: yes
+        update_cache: yes
+
+    - name: Install Podman
+      become: true
+      ansible.builtin.apt:
+        name: podman
+        state: present
+        update_cache: yes
+
+    - name: Install Pip
+      become: true
+      ansible.builtin.apt:
+        name: python3-pip
+        state: present
+        update_cache: yes
+
+    - name: Install Pipx
+      become: true
+      ansible.builtin.apt:
+        name: pipx
+        state: present
+        update_cache: yes
+
+    - name: Run pipx ensurepath
+      ansible.builtin.command:
+        cmd: 'pipx ensurepath'
+
+    - name: Install Podman-Compose with Pipx
+      community.general.pipx:
+        name: podman-compose
+
+    - name: Create a cpvtdb-setup directory in the current user's home directory
+      ansible.builtin.file:
+        path: '{{ ansible_env.HOME }}/cpvtdb-setup'
+        state: directory
+        mode: '0755'
+
+    - name: Copy over the podman_systemd.py script from control machine to the remote machine
+      ansible.builtin.copy:
+        src: ../podman_systemd.py
+        dest: '{{ ansible_env.HOME }}/cpvtdb-setup/podman_systemd.py'
+        owner: "{{ privileged_user }}"
+        group: "{{ privileged_user }}"
+        mode: '0755'
+
+    - name: Run the python file to create a systemd unit file
+      become: true
+      ansible.builtin.command:
+        cmd: 'python3 {{ ansible_env.HOME }}/cpvtdb-setup/podman_systemd.py create-unit'
+      register: podman_systemd_output
+
+    - name: Display the output of podman_systemd.py
+      ansible.builtin.debug:
+        var: podman_systemd_output.stdout_lines
+
+    - name: Create an unprivilaged webuser account {{ webuser }}
+      become: true
+      ansible.builtin.user:
+        name: "{{ webuser }}"
+        state: present
+        shell: /bin/bash
+        create_home: yes
+        password: "{{ webuser_password | password_hash('sha512') }}"
+
+
+    - name: Ensure .ssh directory exists
+      become: true
+      ansible.builtin.file:
+        path: '/home/{{ webuser }}/.ssh'
+        state: directory
+        mode: '0755'
+        owner: "{{ webuser }}"
+        group: "{{ webuser }}"
+
+    - name: Copy over the authorized_keys from the current user to the webuser {{ webuser }}
+      become: true
+      ansible.builtin.copy:
+        remote_src: true
+        src: '{{ ansible_env.HOME }}/.ssh/authorized_keys'
+        dest: '/home/{{ webuser }}/.ssh/authorized_keys'
+        owner: "{{ webuser }}"
+        group: "{{ webuser }}"
+        mode: '0600'
+
+    - name: Ensure the webuser can keep tasks running even when not logged in
+      become: true
+      ansible.builtin.command:
+        cmd: 'loginctl enable-linger {{ webuser }}'

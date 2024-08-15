@@ -1,0 +1,14 @@
+privileged:
+  # Example using VirtualBox Debian 12 VMs. Assumes you have run ssh-copy-id to the VM to the [privileged] user(s).
+  hosts:
+    privileged_user:
+      ansible_host: localhost
+      ansible_port: 3033
+      ansible_user: "{{ privileged_user }}"
+
+webuser:
+  hosts:
+    webuser_host:
+      ansible_host: localhost
+      ansible_port: 3033
+      ansible_user: "{{ webuser }}"

@@ -1,0 +1,184 @@
+- name: Ensure variables are defined
+  hosts: webuser
+
+  tasks:
+    - name: ensure variables are defined
+      ansible.builtin.assert:
+        that:
+          - zenodo_token is defined
+          - deposition_id is defined
+          - systemd_timeout is defined
+
+    - name: ensure env variables are defined
+      ansible.builtin.assert:
+        that:
+          - POSTGRES_USER is defined
+          - POSTGRES_PASSWORD is defined
+          - POSTGRES_DB is defined
+          - DOMAIN is defined
+          - RCSB_SEARCH_AUTHOR is defined
+          - DEFAULT_PDB is defined
+          - THEMES_COOKIE_SECRET_KEY is defined
+          - CF_TUNNEL_TOKEN is defined
+
+
+- name: Setup Webuser systemd
+  hosts: webuser
+
+  tasks:
+    - name: Install podman-compose
+      community.general.pipx:
+        name: podman-compose
+
+    - name: Run pipx ensurepath
+      ansible.builtin.command:
+        cmd: 'pipx ensurepath'
+
+    - name: Create a cpvt-db directory in the webuser's home directory
+      ansible.builtin.file:
+        path: '{{ ansible_env.HOME }}/cpvt-db'
+        state: directory
+        mode: '0755'
+
+    - name: Create a initdb directory in the webuser's cpvt-db directory
+      ansible.builtin.file:
+        path: '{{ ansible_env.HOME }}/cpvt-db/initdb'
+        state: directory
+        mode: '0755'
+
+    - name: Remove existing .env file if it exists
+      ansible.builtin.file:
+        path: '{{ ansible_env.HOME }}/cpvt-db/.env'
+        state: absent
+
+    - name: Touch an .env file in the webuser's cpvt-db directory
+      ansible.builtin.file:
+        path: '{{ ansible_env.HOME }}/cpvt-db/.env'
+        state: touch
+        mode: '0644'
+
+    - name: Write the .env file with the env variables
+      ansible.builtin.blockinfile:
+        path: '{{ ansible_env.HOME }}/cpvt-db/.env'
+        block: |
+          POSTGRES_USER={{ POSTGRES_USER }}
+          POSTGRES_PASSWORD={{ POSTGRES_PASSWORD }}
+          POSTGRES_DB={{ POSTGRES_DB }}
+          DOMAIN={{ DOMAIN }}
+          RCSB_SEARCH_AUTHOR={{ RCSB_SEARCH_AUTHOR }}
+          DEFAULT_PDB={{ DEFAULT_PDB }}
+          THEMES_COOKIE_SECRET_KEY={{ THEMES_COOKIE_SECRET_KEY }}
+          DATABASE_URL=postgres://{{ POSTGRES_USER }}:{{ POSTGRES_PASSWORD }}@db:5432/{{ POSTGRES_DB }}
+          CF_TUNNEL_TOKEN={{ CF_TUNNEL_TOKEN }}
+
+
+    - name: Copy the download_zenodo.py script from control machine to remote machine
+      ansible.builtin.copy:
+        src: ../download_zenodo.py
+        dest: '{{ ansible_env.HOME }}/cpvt-db/download_zenodo.py'
+        mode: '0755'
+
+    - name: Execute the download_zenodo.py script
+      ansible.builtin.command:
+        cmd: 'python3 {{ ansible_env.HOME }}/cpvt-db/download_zenodo.py --zenodo_token {{ zenodo_token }} --deposition_id {{ deposition_id }} --output_dir {{ ansible_env.HOME }}/cpvt-db/initdb'
+      register: download_zenodo_output
+
+    - name: Display the output of download_zenodo.py
+      ansible.builtin.debug:
+        var: download_zenodo_output.stdout_lines
+
+    - name: Copy the docker-compose.yaml file from control machine to remote machine
+      ansible.builtin.copy:
+        src: ../docker-compose.yaml
+        dest: '{{ ansible_env.HOME }}/cpvt-db/docker-compose.yaml'
+        mode: '0644'
+
+    - name: Pull the docker images
+      ansible.builtin.command: "podman-compose -f {{ ansible_env.HOME }}/cpvt-db/docker-compose.yaml pull"
+      environment:
+        PATH: "{{ ansible_env.PATH }}:{{ ansible_env.HOME }}/.local/bin"
+
+    - name: Remove containers if they are running
+      ansible.builtin.command: "podman-compose -f {{ ansible_env.HOME }}/cpvt-db/docker-compose.yaml down"
+      environment:
+        PATH: "{{ ansible_env.PATH }}:{{ ansible_env.HOME }}/.local/bin"
+
+    - name: Start the docker containers to create volumes to get it ready for systemd
+      ansible.builtin.command: "podman-compose -f {{ ansible_env.HOME }}/cpvt-db/docker-compose.yaml up -d"
+      environment:
+        PATH: "{{ ansible_env.PATH }}:{{ ansible_env.HOME }}/.local/bin"
+
+    - name: Grab the names of the running containers created by podman-compose
+      ansible.builtin.shell: |
+        podman-compose -f /home/webuser/cpvt-db/docker-compose.yaml ps | awk '/CONTAINER ID/{flag=1; next} flag' | awk '{print $NF}'
+      environment:
+        PATH: "{{ ansible_env.PATH }}:{{ ansible_env.HOME }}/.local/bin"
+      register: podman_ps_output
+
+    - name: Display the names of the running containers
+      ansible.builtin.debug:
+        var: podman_ps_output.stdout_lines
+
+    - name: Run healthcheck on the podman_ps_output (retry 5 times, 30s interval)
+      ansible.builtin.command:
+          cmd: 'podman healthcheck run {{ item }}'
+      with_items: '{{ podman_ps_output.stdout_lines }}'
+      retries: 5
+      delay: 30
+      register: healthcheck_results
+      failed_when: healthcheck_results.rc != 0 and healthcheck_results.rc != 125
+
+    - name: Stop the docker containers
+      ansible.builtin.command: "podman-compose -f {{ ansible_env.HOME }}/cpvt-db/docker-compose.yaml stop"
+      environment:
+        PATH: "{{ ansible_env.PATH }}:{{ ansible_env.HOME }}/.local/bin"
+
+    - name: Copy over the podman_systemd.py script from control machine to the remote machine
+      ansible.builtin.copy:
+        src: ../podman_systemd.py
+        dest: '{{ ansible_env.HOME }}/cpvt-db/podman_systemd.py'
+        mode: '0755'
+
+    - name: Run the python file to create a systemd user unit file while in the cpvt-db directory
+      ansible.builtin.command:
+        chdir: '{{ ansible_env.HOME }}/cpvt-db'
+        cmd: 'python3 podman_systemd.py register'
+      register: podman_systemd_output
+
+    - name: Display the output of podman_systemd.py
+      ansible.builtin.debug:
+          var: podman_systemd_output.stdout_lines
+
+    - name: Create the override dir for the service
+      ansible.builtin.file:
+          path: '{{ ansible_env.HOME }}/.config/systemd/user/podman-compose@cpvt-db.service.d'
+          state: directory
+          mode: '0755'
+          recurse: yes
+
+    - name: Create the override.conf file
+      ansible.builtin.copy:
+          content: |
+            [Service]
+            TimeoutStartSec={{ systemd_timeout }}s
+          dest: '{{ ansible_env.HOME }}/.config/systemd/user/podman-compose@cpvt-db.service.d/override.conf'
+          mode: '0644'
+
+    - name: Start the systemd user unit file
+      ansible.builtin.command:
+          cmd: >
+            systemctl --user enable --now 'podman-compose@cpvt-db'
+
+    - name: Display the status of the systemd user unit file
+      ansible.builtin.command:
+          cmd: 'systemctl --user status podman-compose@cpvt-db'
+      register: systemd_status_output
+
+    - name: Display the status of the systemd user unit file
+      ansible.builtin.debug:
+          var: systemd_status_output.stdout_lines
+
+
+
+
+

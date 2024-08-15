@@ -1,0 +1,10 @@
+
+
+- name: Run the setup playbook
+  ansible.builtin.import_playbook: ./setup.yaml
+
+- name: Run the webuser playbook
+  ansible.builtin.import_playbook: ./webuser.yaml
+
+
+
